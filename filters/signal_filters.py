@@ -23,11 +23,15 @@ class SignalResult:
     top3_concentration: float = 0.0
     composite_score: float = 0.0
     should_alert: bool = False
+    # Performans takibi için ek alanlar
+    entry_price: float = 0.0
+    side: str = ""
 
     WEIGHTS: dict = field(default_factory=lambda: {
-        "imbalance": 0.20,
+        # Aşırı uç orderbook dengesizliklerine daha az, fiyat hareketine biraz daha fazla ağırlık ver
+        "imbalance": 0.15,
         "depth_ratio": 0.15,
-        "zscore": 0.25,
+        "zscore": 0.30,
         "overreaction": 0.20,
         "spread_zscore": 0.10,
         "concentration": 0.10,
@@ -43,6 +47,9 @@ class SignalResult:
             + w["spread_zscore"] * self.spread_zscore_score
             + w["concentration"] * self.concentration_score
         )
+        # Eğer en üst 3 bid'e yoğunlaşma çok düşükse, sinyali gürültü olarak hafifçe cezalandır
+        if self.top3_concentration and self.top3_concentration < settings.top3_concentration_min * 0.3:
+            self.composite_score *= 0.7
         self.should_alert = self.composite_score >= settings.composite_score_min
 
     def summary(self):
@@ -58,6 +65,8 @@ class SignalResult:
 
 class SignalFilter:
     HISTORY_SIZE = 60
+    # Spread z-score sinyalleri için minimum toplam derinlik (çok sığ defterleri filtrelemek için)
+    MIN_LIQUIDITY_FOR_SPREAD = 50.0
 
     def __init__(self, token_id: str, market_id: str):
         self.token_id = token_id
@@ -85,6 +94,20 @@ class SignalFilter:
         self._filter_overreaction(snapshot, result)
         self._filter_spread_zscore(result)
         self._filter_concentration(snapshot, result)
+
+        # Çok sığ defter + yüksek spread z-score kombinasyonlarında spread sinyalini zayıflat
+        total_liquidity = snapshot.total_bid_volume + snapshot.total_ask_volume
+        if (
+            total_liquidity < self.MIN_LIQUIDITY_FOR_SPREAD
+            and result.spread_zscore > settings.spread_zscore_threshold
+        ):
+            logger.debug(
+                f"Skipping spread component for {self.market_id} due to low liquidity: "
+                f"liq={total_liquidity:.2f}, spread_z={result.spread_zscore:.2f}"
+            )
+            result.spread_zscore = 0.0
+            result.spread_zscore_score = 0.0
+
         result.compute_composite()
 
         if result.should_alert:
@@ -95,8 +118,10 @@ class SignalFilter:
         ask_vol = snap.top5_ask_volume
         if ask_vol == 0:
             return
-        ratio = snap.top5_bid_volume / ask_vol
-        result.imbalance_ratio = ratio
+        raw_ratio = snap.top5_bid_volume / ask_vol
+        # Aşırı uç değerleri skorlamada normalize et (ör. 50x yerine 10x)
+        ratio = max(min(raw_ratio, 10.0), 0.1)
+        result.imbalance_ratio = raw_ratio
         if ratio > settings.imbalance_high or ratio < settings.imbalance_low:
             result.imbalance_score = 1.0
         else:

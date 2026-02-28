@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     poly_api_passphrase: str = Field(default="", env="POLY_API_PASSPHRASE")
     poly_private_key: str = Field(default="", env="POLY_PRIVATE_KEY")
 
+    # Hava durumu sağlayıcısı için API anahtarı
+    weather_api_key: str = Field(default="", env="WEATHER_API_KEY")
+    weather_poll_interval: int = Field(60, env="WEATHER_POLL_INTERVAL")
+
     telegram_bot_token: str = Field(default="", env="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field(default="", env="TELEGRAM_CHAT_ID")
 
@@ -22,6 +26,9 @@ class Settings(BaseSettings):
     spread_zscore_threshold: float = Field(2.5, env="SPREAD_ZSCORE_THRESHOLD")
     top3_concentration_min: float = Field(0.70, env="TOP3_CONCENTRATION_MIN")
     composite_score_min: float = Field(0.75, env="COMPOSITE_SCORE_MIN")
+
+    # Onay beklemeden sinyalleri otomatik uygula
+    auto_execute: bool = Field(True, env="AUTO_EXECUTE")
 
     env: str = Field("development", env="ENV")
     log_level: str = Field("INFO", env="LOG_LEVEL")
