@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     auto_execute: bool = Field(True, env="AUTO_EXECUTE")
 
     env: str = Field("development", env="ENV")
+    require_telegram_approval: bool = Field(False, env="REQUIRE_TELEGRAM_APPROVAL")
+    auto_switch_to_live: bool = Field(False, env="AUTO_SWITCH_TO_LIVE")
+    dry_run_eval_horizon_sec: int = Field(300, env="DRY_RUN_EVAL_HORIZON_SEC")
+    dry_run_min_trades: int = Field(20, env="DRY_RUN_MIN_TRADES")
+    dry_run_min_win_rate: float = Field(0.55, env="DRY_RUN_MIN_WIN_RATE")
+    dry_run_min_net_pnl_usd: float = Field(0.0, env="DRY_RUN_MIN_NET_PNL_USD")
+    dry_run_pnl_floor_price: float = Field(0.05, env="DRY_RUN_PNL_FLOOR_PRICE")
+    dry_run_state_file: str = Field("logs/dry_run_stats.json", env="DRY_RUN_STATE_FILE")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
     class Config:

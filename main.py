@@ -13,12 +13,12 @@ load_dotenv()
 
 from config import settings
 from orderbook_tracker import OrderBookTracker, OrderBookSnapshot
-from filters import SignalFilter, SignalResult
+from filters import SignalFilter
 from risk_manager import RiskManager
 from alerts import TelegramAlert
 from executor import TradeExecutor
 from weather import WeatherClient, WeatherSnapshot
-from performance import PerformanceTracker
+from performance import PerformanceTracker, DryRunEvaluator
 
 logger.remove()
 logger.add(sys.stdout, level=settings.log_level, format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
@@ -100,7 +100,7 @@ MARKETS_META: Dict[str, dict] = load_markets_metadata()
 class PolymarketBot:
     def __init__(self):
         self.risk_manager = RiskManager()
-        self.telegram = TelegramAlert(on_approved=self._on_approved)
+        self.telegram = TelegramAlert(on_approved=self._on_approved if settings.require_telegram_approval else None)
         self.executor = TradeExecutor(self.risk_manager)
         self.performance = PerformanceTracker(settings.capital_total_usd)
         self.market_meta: Dict[str, dict] = MARKETS_META
@@ -121,6 +121,20 @@ class PolymarketBot:
         self._loop = None
         self._stop_event: asyncio.Event | None = None
         self._alive: bool = True
+        self._live_mode_enabled = settings.env != "development"
+        self._auto_live_warning_sent = False
+        self.dry_run_evaluator = (
+            DryRunEvaluator(
+                horizon_seconds=settings.dry_run_eval_horizon_sec,
+                min_trades=settings.dry_run_min_trades,
+                min_win_rate=settings.dry_run_min_win_rate,
+                min_net_pnl_usd=settings.dry_run_min_net_pnl_usd,
+                pnl_floor_price=settings.dry_run_pnl_floor_price,
+                state_file=settings.dry_run_state_file,
+            )
+            if settings.env == "development"
+            else None
+        )
 
     def _weather_allows_trade(self, token_id: str) -> bool:
         """
@@ -180,7 +194,182 @@ class PolymarketBot:
 
             asyncio.run_coroutine_threadsafe(_notify_and_stop(), self._loop)
 
+    def _is_live_mode(self) -> bool:
+        return self._live_mode_enabled
+
+    def _send_async_message(self, text: str):
+        if self._loop and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self.telegram.send_message(text), self._loop)
+
+    def _track_dry_run_trade(self, trade_id: str, signal, risk):
+        if self.dry_run_evaluator is None:
+            return
+
+        entry_mid_price = float(getattr(signal, "entry_price", 0.0) or 0.0)
+        opened_at = None
+        if entry_mid_price <= 0:
+            snap = self.tracker.latest_snapshot(signal.token_id)
+            if snap is None or snap.mid_price is None:
+                logger.warning(f"Dry-run trade not tracked (missing mid price) | trade_id={trade_id} market={signal.market_id}")
+                return
+            entry_mid_price = snap.mid_price
+            opened_at = snap.timestamp
+
+        side = (getattr(signal, "side", "") or "").upper()
+        if side not in {"YES", "NO"}:
+            side = "YES" if signal.imbalance_ratio > 1.0 else "NO"
+        direction = f"BUY {side}"
+        tracked = self.dry_run_evaluator.record_open_trade(
+            trade_id=trade_id,
+            token_id=signal.token_id,
+            market_id=signal.market_id,
+            direction="BUY_YES" if side == "YES" else "BUY_NO",
+            size_usd=risk.max_size_usd,
+            entry_mid_price=entry_mid_price,
+            opened_at=opened_at,
+        )
+
+        if tracked:
+            summary = self.dry_run_evaluator.summary()
+            logger.info(
+                f"Dry-run trade tracked | id={trade_id} market={signal.market_id} direction={direction} "
+                f"entry_mid={entry_mid_price:.4f} pending={summary['open_trades']}"
+            )
+
+    def _process_dry_run_outcomes(self, snap: OrderBookSnapshot):
+        if self.dry_run_evaluator is None:
+            return
+
+        outcomes = self.dry_run_evaluator.resolve_with_snapshot(
+            token_id=snap.token_id,
+            market_id=snap.market_id,
+            exit_mid_price=snap.mid_price,
+            timestamp=snap.timestamp,
+        )
+        if not outcomes:
+            return
+
+        for outcome in outcomes:
+            status = "WIN" if outcome.won else "LOSS"
+            logger.info(
+                f"Dry-run closed | {status} | market={outcome.market_id} trade_id={outcome.trade_id} "
+                f"entry={outcome.entry_mid_price:.4f} exit={outcome.exit_mid_price:.4f} "
+                f"pnl=${outcome.pnl_usd:.2f} ret={100*outcome.return_pct:.2f}%"
+            )
+
+        summary = self.dry_run_evaluator.summary()
+        closed = summary["closed_trades"]
+        win_rate = 100 * summary["win_rate"]
+        net_pnl = summary["net_pnl_usd"]
+        open_trades = summary["open_trades"]
+
+        logger.info(
+            f"Dry-run stats | closed={closed} win_rate={win_rate:.2f}% net_pnl=${net_pnl:.2f} open={open_trades}"
+        )
+        self._send_async_message(
+            f"🧪 *Dry-run update*\n"
+            f"Closed: `{closed}` | Win rate: `{win_rate:.2f}%`\n"
+            f"Net PnL: `${net_pnl:.2f}` | Open: `{open_trades}`"
+        )
+
+        self._maybe_enable_live_mode()
+
+    def _maybe_enable_live_mode(self):
+        if self.dry_run_evaluator is None:
+            return
+        if self._is_live_mode():
+            return
+        if not settings.auto_switch_to_live:
+            return
+        if not self.dry_run_evaluator.ready_for_live():
+            return
+
+        has_credentials = all(
+            [
+                settings.poly_api_key.strip(),
+                settings.poly_api_secret.strip(),
+                settings.poly_api_passphrase.strip(),
+                settings.poly_private_key.strip(),
+            ]
+        )
+        if not has_credentials:
+            if not self._auto_live_warning_sent:
+                self._auto_live_warning_sent = True
+                logger.warning("Dry-run criteria passed but live credentials are incomplete. Staying in DRY RUN mode.")
+                self._send_async_message(
+                    "⚠️ *Dry-run başarılı* fakat canlı geçiş için API/private key eksik. `DRY RUN` modunda devam ediliyor."
+                )
+            return
+
+        self._live_mode_enabled = True
+        summary = self.dry_run_evaluator.summary()
+        logger.warning(
+            f"Dry-run criteria passed. LIVE mode enabled automatically | closed={summary['closed_trades']} "
+            f"win_rate={100*summary['win_rate']:.2f}% net_pnl=${summary['net_pnl_usd']:.2f}"
+        )
+        self._send_async_message(
+            "✅ *Dry-run başarılı*\n"
+            f"Closed: `{summary['closed_trades']}` | Win rate: `{100*summary['win_rate']:.2f}%`\n"
+            f"Net PnL: `${summary['net_pnl_usd']:.2f}`\n"
+            "🚀 Bot canlı trade moduna geçti."
+        )
+
+    def _execute_signal(self, signal, risk):
+        live_mode = self._is_live_mode()
+
+        if live_mode:
+            order_id = self.executor.execute_trade(signal, risk)
+        else:
+            order_id = self.executor.dry_run(signal, risk)
+            if order_id:
+                self._track_dry_run_trade(order_id, signal, risk)
+
+        direction = "BUY YES" if signal.imbalance_ratio > 1.0 else "BUY NO"
+        side = (getattr(signal, "side", "") or "").upper() or ("YES" if signal.imbalance_ratio > 1.0 else "NO")
+        entry_price = float(getattr(signal, "entry_price", 0.0) or 0.0)
+        if entry_price <= 0:
+            latest = self.tracker.latest_snapshot(signal.token_id)
+            if latest and latest.mid_price:
+                entry_price = latest.mid_price
+
+        if order_id and entry_price > 0 and risk.max_size_usd > 0:
+            self.performance.record_trade(
+                trade_id=order_id,
+                market_id=signal.market_id,
+                token_id=signal.token_id,
+                side=side,
+                entry_price=entry_price,
+                size_usd=risk.max_size_usd,
+            )
+            self._decisions[order_id] = {
+                "market_id": signal.market_id,
+                "token_id": signal.token_id,
+                "side": side,
+                "entry_price": entry_price,
+                "size_usd": risk.max_size_usd,
+                "settled": False,
+            }
+
+        mode = "LIVE" if live_mode else "DRY RUN"
+        status = "EXECUTED" if order_id else "FAILED"
+        self._send_async_message(
+            f"🤖 *Auto Trade {status}* ({mode})\n"
+            f"Market: `{signal.market_id}`\n"
+            f"Direction: *{direction}*\n"
+            f"Size: `${risk.max_size_usd:.2f}`\n"
+            f"Order ID: `{order_id or 'N/A'}`"
+        )
+
+        if not live_mode and self.dry_run_evaluator is not None:
+            summary = self.dry_run_evaluator.summary()
+            logger.info(
+                f"Dry-run monitor | closed={summary['closed_trades']} open={summary['open_trades']} "
+                f"win_rate={100*summary['win_rate']:.2f}% net_pnl=${summary['net_pnl_usd']:.2f}"
+            )
+
     def _on_snapshot(self, snap: OrderBookSnapshot):
+        self._process_dry_run_outcomes(snap)
+
         filt = self.signal_filters.get(snap.token_id)
         if not filt:
             return
@@ -198,81 +387,28 @@ class PolymarketBot:
             if "No available capital" in risk.reason:
                 self._handle_bankruptcy()
             return
-        # Eğer auto_execute açıksa, onay beklemeden hemen trade et
+
         if settings.auto_execute:
-            trade_id = None
-            if settings.env == "development":
-                trade_id = self.executor.dry_run(result, risk)
-            else:
-                trade_id = self.executor.execute_trade(result, risk)
-
-            if trade_id:
-                # Performans kaydı
-                self.performance.record_trade(
-                    trade_id=trade_id,
-                    market_id=result.market_id,
-                    token_id=result.token_id,
-                    side=result.side,
-                    entry_price=result.entry_price,
-                    size_usd=risk.max_size_usd,
-                )
-                # Çözüm (win/lose) takibi için karar kaydı
-                self._decisions[trade_id] = {
-                    "market_id": result.market_id,
-                    "token_id": result.token_id,
-                    "side": result.side,
-                    "entry_price": result.entry_price,
-                    "size_usd": risk.max_size_usd,
-                    "settled": False,
-                }
-                logger.info(
-                    f"AUTO-EXECUTED trade | market={result.market_id} "
-                    f"side={result.side} size=${risk.max_size_usd:.2f} id={trade_id}"
-                )
-                if self._loop and not self._loop.is_closed():
-                    async def _notify():
-                        await self.telegram.send_message(
-                            f"⚡ *Auto trade executed*\n\n"
-                            f"Market: `{result.market_id}`\n"
-                            f"Side: *{result.side}*\n"
-                            f"Size: `${risk.max_size_usd:.2f}`\n"
-                            f"Composite: `{result.composite_score:.3f}`\n"
-                            f"Trade ID: `{trade_id}`"
-                        )
-
-                    asyncio.run_coroutine_threadsafe(_notify(), self._loop)
+            self._execute_signal(result, risk)
             return
 
-        # Aksi halde, eski davranış: Telegram üzerinden onay iste
-        alert_id = str(uuid.uuid4())[:8]
-        self._pending_trades[alert_id] = (result, risk)
-        if self._loop and not self._loop.is_closed():
-            asyncio.run_coroutine_threadsafe(
-                self.telegram.send_signal_alert(alert_id, result, risk),
-                self._loop,
-            )
+        if settings.require_telegram_approval:
+            alert_id = str(uuid.uuid4())[:8]
+            self._pending_trades[alert_id] = (result, risk)
+            if self._loop and not self._loop.is_closed():
+                asyncio.run_coroutine_threadsafe(
+                    self.telegram.send_signal_alert(alert_id, result, risk),
+                    self._loop,
+                )
+        else:
+            self._execute_signal(result, risk)
 
     def _on_approved(self, alert_id: str):
         entry = self._pending_trades.pop(alert_id, None)
         if not entry:
             return
         signal, risk = entry
-        trade_id = None
-        if settings.env == "development":
-            trade_id = self.executor.dry_run(signal, risk)
-        else:
-            trade_id = self.executor.execute_trade(signal, risk)
-
-        if trade_id:
-            size_usd = risk.max_size_usd
-            self.performance.record_trade(
-                trade_id=trade_id,
-                market_id=signal.market_id,
-                token_id=signal.token_id,
-                side=signal.side or ("YES" if signal.imbalance_ratio > 1.0 else "NO"),
-                entry_price=signal.entry_price or 0.0,
-                size_usd=size_usd,
-            )
+        self._execute_signal(signal, risk)
 
     async def run(self):
         self._loop = asyncio.get_event_loop()
@@ -282,8 +418,22 @@ class PolymarketBot:
         logger.info("=" * 50)
         logger.info("Polymarket Bot starting")
         logger.info(f"ENV: {settings.env}")
+        logger.info(f"Approval mode: {'manual' if settings.require_telegram_approval else 'auto'}")
+        logger.info(f"Execution mode: {'LIVE' if self._is_live_mode() else 'DRY RUN'}")
         logger.info(f"Capital: ${settings.capital_total_usd:.0f}")
         logger.info(f"Markets tracked: {len(MARKETS_TO_TRACK)}")
+        if self.dry_run_evaluator is not None:
+            criteria = self.dry_run_evaluator.criteria
+            summary = self.dry_run_evaluator.summary()
+            logger.info(
+                f"Dry-run criteria: min_trades={criteria['min_trades']} min_win_rate={100*criteria['min_win_rate']:.2f}% "
+                f"min_net_pnl=${criteria['min_net_pnl_usd']:.2f} horizon={settings.dry_run_eval_horizon_sec}s"
+            )
+            logger.info(
+                f"Dry-run progress: closed={summary['closed_trades']} win_rate={100*summary['win_rate']:.2f}% "
+                f"net_pnl=${summary['net_pnl_usd']:.2f} open={summary['open_trades']}"
+            )
+            logger.info(f"Auto switch to live: {'enabled' if settings.auto_switch_to_live else 'disabled'}")
         logger.info("=" * 50)
 
         if not MARKETS_TO_TRACK:
