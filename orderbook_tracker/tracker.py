@@ -86,13 +86,30 @@ class OrderBookTracker:
 
     def _handle_event(self, event: dict):
         event_type = event.get("event_type") or event.get("type")
-        asset_id = event.get("asset_id")
-        if asset_id not in self._bids:
-            return
+
         if event_type == "book":
+            asset_id = event.get("asset_id")
+            if asset_id not in self._bids:
+                return
             self._process_full_book(asset_id, event)
-        elif event_type in ("price_change", "tick_size_change"):
-            self._process_delta(asset_id, event)
+            self._emit_snapshot(asset_id)
+
+        elif event_type == "price_change":
+            # price_changes is a list; each item carries its own asset_id
+            for change in event.get("price_changes", []):
+                asset_id = change.get("asset_id")
+                if asset_id not in self._bids:
+                    continue
+                self._process_delta(asset_id, change)
+                self._emit_snapshot(asset_id)
+
+        elif event_type == "tick_size_change":
+            asset_id = event.get("asset_id")
+            if asset_id not in self._bids:
+                return
+            self._emit_snapshot(asset_id)
+
+    def _emit_snapshot(self, asset_id: str):
         snap = self._build_snapshot(asset_id)
         self.history[asset_id].append(snap)
         if self.on_snapshot:

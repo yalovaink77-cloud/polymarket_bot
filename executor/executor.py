@@ -53,4 +53,5 @@ class TradeExecutor:
     def dry_run(self, signal, risk_check: RiskCheck) -> str:
         fake_id = f"dry-{uuid.uuid4().hex[:8]}"
         logger.info(f"[DRY RUN] market={signal.market_id} size=${risk_check.max_size_usd:.2f} | id={fake_id}")
+        self._risk.add_position(position_id=fake_id, market_id=signal.market_id, size_usd=risk_check.max_size_usd)
         return fake_id

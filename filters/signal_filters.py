@@ -112,6 +112,14 @@ class SignalFilter:
 
         if result.should_alert:
             logger.info(f"ALERT — {result.summary()}")
+        else:
+            logger.debug(
+                f"[{self.market_id[:10]}] composite={result.composite_score:.3f} "
+                f"(imb={result.imbalance_score:.2f} depth={result.depth_ratio_score:.2f} "
+                f"z={result.zscore_score:.2f} over={result.overreaction_score:.2f} "
+                f"spr={result.spread_zscore_score:.2f} conc={result.concentration_score:.2f}) "
+                f"history={len(self._mid_history)}"
+            )
         return result
 
     def _filter_imbalance(self, snap, result):

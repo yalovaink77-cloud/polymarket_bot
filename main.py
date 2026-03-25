@@ -2,6 +2,7 @@ import asyncio
 import json
 import signal as sys_signal
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Dict
@@ -10,6 +11,9 @@ from dotenv import load_dotenv
 from loguru import logger
 
 load_dotenv()
+
+# Railway / container ortamında logs/ dizini olmayabilir — önceden oluştur
+Path("logs").mkdir(exist_ok=True)
 
 from config import settings
 from orderbook_tracker import OrderBookTracker, OrderBookSnapshot
@@ -118,6 +122,8 @@ class PolymarketBot:
         self._pending_trades: Dict[str, tuple] = {}
         # Otomatik verilen kararların çözüm (win/lose) takibi için
         self._decisions: Dict[str, dict] = {}
+        # Aynı market için sinyal spam'ını önlemek: market_id -> son sinyal unix zamanı
+        self._last_signal_time: Dict[str, float] = {}
         self._loop = None
         self._stop_event: asyncio.Event | None = None
         self._alive: bool = True
@@ -256,6 +262,7 @@ class PolymarketBot:
                 f"entry={outcome.entry_mid_price:.4f} exit={outcome.exit_mid_price:.4f} "
                 f"pnl=${outcome.pnl_usd:.2f} ret={100*outcome.return_pct:.2f}%"
             )
+            self.risk_manager.remove_position(outcome.trade_id)
 
         summary = self.dry_run_evaluator.summary()
         closed = summary["closed_trades"]
@@ -352,20 +359,33 @@ class PolymarketBot:
 
         mode = "LIVE" if live_mode else "DRY RUN"
         status = "EXECUTED" if order_id else "FAILED"
+
+        pnl_line = ""
+        if not live_mode and self.dry_run_evaluator is not None:
+            summary = self.dry_run_evaluator.summary()
+            wins = summary["wins"]
+            losses = summary["losses"]
+            win_rate = 100 * summary["win_rate"]
+            net_pnl = summary["net_pnl_usd"]
+            pnl_emoji = "📈" if net_pnl >= 0 else "📉"
+            pnl_line = (
+                f"\n\n{pnl_emoji} *Dry-run P&L*\n"
+                f"Kapalı: `{wins}W / {losses}L` (Win: `{win_rate:.1f}%`)\n"
+                f"Net PnL: `${net_pnl:.2f}`"
+            )
+            logger.info(
+                f"Dry-run monitor | closed={summary['closed_trades']} open={summary['open_trades']} "
+                f"win_rate={win_rate:.2f}% net_pnl=${net_pnl:.2f}"
+            )
+
         self._send_async_message(
             f"🤖 *Auto Trade {status}* ({mode})\n"
             f"Market: `{signal.market_id}`\n"
             f"Direction: *{direction}*\n"
             f"Size: `${risk.max_size_usd:.2f}`\n"
             f"Order ID: `{order_id or 'N/A'}`"
+            + pnl_line
         )
-
-        if not live_mode and self.dry_run_evaluator is not None:
-            summary = self.dry_run_evaluator.summary()
-            logger.info(
-                f"Dry-run monitor | closed={summary['closed_trades']} open={summary['open_trades']} "
-                f"win_rate={100*summary['win_rate']:.2f}% net_pnl=${summary['net_pnl_usd']:.2f}"
-            )
 
     def _on_snapshot(self, snap: OrderBookSnapshot):
         self._process_dry_run_outcomes(snap)
@@ -378,6 +398,13 @@ class PolymarketBot:
         result = filt.evaluate(snap)
         if result is None or not result.should_alert:
             return
+
+        # Per-market cooldown: aynı market için çok sık sinyal açılmasını önle
+        _SIGNAL_COOLDOWN_SEC = 60
+        last_signal = self._last_signal_time.get(snap.market_id, 0.0)
+        if time.time() - last_signal < _SIGNAL_COOLDOWN_SEC:
+            return
+
         # Performans takibi için giriş fiyatı ve yön bilgisini doldur
         result.entry_price = snap.mid_price or 0.0
         result.side = "YES" if result.imbalance_ratio > 1.0 else "NO"
@@ -389,6 +416,7 @@ class PolymarketBot:
             return
 
         if settings.auto_execute:
+            self._last_signal_time[snap.market_id] = time.time()
             self._execute_signal(result, risk)
             return
 
@@ -401,6 +429,7 @@ class PolymarketBot:
                     self._loop,
                 )
         else:
+            self._last_signal_time[snap.market_id] = time.time()
             self._execute_signal(result, risk)
 
     def _on_approved(self, alert_id: str):
@@ -501,6 +530,31 @@ class PolymarketBot:
                     f"pnl=${summary['pnl_usd']:.2f} "
                     f"open_positions={summary['open_positions']}"
                 )
+                # Dry-run değerlendirici varsa daha detaylı özet Telegram'a gönder
+                if self.dry_run_evaluator is not None:
+                    dr = self.dry_run_evaluator.summary()
+                    wins = dr["wins"]
+                    losses = dr["losses"]
+                    win_rate = 100 * dr["win_rate"]
+                    net_pnl = dr["net_pnl_usd"]
+                    open_trades = dr["open_trades"]
+                    pnl_emoji = "📈" if net_pnl >= 0 else "📉"
+                    self._send_async_message(
+                        f"{pnl_emoji} *5 Dakikalık P&L Özeti*\n"
+                        f"Kapalı trade: `{wins}W / {losses}L`\n"
+                        f"Win rate: `{win_rate:.1f}%`\n"
+                        f"Net PnL: `${net_pnl:.2f}`\n"
+                        f"Açık pozisyon: `{open_trades}`\n"
+                        f"Equity: `${summary['equity_usd']:.2f}`"
+                    )
+                else:
+                    pnl_emoji = "📈" if summary['pnl_usd'] >= 0 else "📉"
+                    self._send_async_message(
+                        f"{pnl_emoji} *5 Dakikalık P&L Özeti*\n"
+                        f"Equity: `${summary['equity_usd']:.2f}`\n"
+                        f"PnL: `${summary['pnl_usd']:.2f}`\n"
+                        f"Açık pozisyon: `{summary['open_positions']}`"
+                    )
             except Exception as exc:
                 logger.error(f"Performance reporter error: {exc}")
             await asyncio.sleep(interval)
