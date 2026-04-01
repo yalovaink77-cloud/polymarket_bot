@@ -27,15 +27,15 @@ class Settings(BaseSettings):
     top3_concentration_min: float = Field(0.70, env="TOP3_CONCENTRATION_MIN")
     composite_score_min: float = Field(0.75, env="COMPOSITE_SCORE_MIN")
 
-    # Near-resolution: bu aralık dışındaki fiyatlarda trade açma (market kapanmak üzere)
+    # Near-resolution filtresi: mid price bu aralık dışındaysa sinyal yoksay
     near_resolution_max: float = Field(0.88, env="NEAR_RESOLUTION_MAX")
     near_resolution_min: float = Field(0.12, env="NEAR_RESOLUTION_MIN")
 
-    # Overreaction skoru bu eşiğin üzerindeyse momentum takip et, altındaysa mean-revert
+    # Momentum vs mean-reversion ayrımı için overreaction eşiği
     momentum_overreaction_min: float = Field(0.65, env="MOMENTUM_OVERREACTION_MIN")
 
     # Aynı market için sinyal cooldown süresi (saniye)
-    signal_cooldown_sec: int = Field(300, env="SIGNAL_COOLDOWN_SEC")
+    signal_cooldown_sec: float = Field(300.0, env="SIGNAL_COOLDOWN_SEC")
 
     # Onay beklemeden sinyalleri otomatik uygula
     auto_execute: bool = Field(True, env="AUTO_EXECUTE")
@@ -43,12 +43,13 @@ class Settings(BaseSettings):
     env: str = Field("development", env="ENV")
     require_telegram_approval: bool = Field(False, env="REQUIRE_TELEGRAM_APPROVAL")
     auto_switch_to_live: bool = Field(False, env="AUTO_SWITCH_TO_LIVE")
-    dry_run_eval_horizon_sec: int = Field(3600, env="DRY_RUN_EVAL_HORIZON_SEC")
+    dry_run_eval_horizon_sec: int = Field(300, env="DRY_RUN_EVAL_HORIZON_SEC")
     dry_run_min_trades: int = Field(20, env="DRY_RUN_MIN_TRADES")
     dry_run_min_win_rate: float = Field(0.55, env="DRY_RUN_MIN_WIN_RATE")
     dry_run_min_net_pnl_usd: float = Field(0.0, env="DRY_RUN_MIN_NET_PNL_USD")
     dry_run_pnl_floor_price: float = Field(0.05, env="DRY_RUN_PNL_FLOOR_PRICE")
     dry_run_state_file: str = Field("logs/dry_run_stats.json", env="DRY_RUN_STATE_FILE")
+    dry_run_stop_loss_pct: float = Field(0.30, env="DRY_RUN_STOP_LOSS_PCT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
     class Config:

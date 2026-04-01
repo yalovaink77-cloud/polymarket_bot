@@ -41,6 +41,7 @@ class DryRunOutcome:
     won: bool
     opened_at: datetime
     closed_at: datetime
+    stop_loss_hit: bool = False
 
 
 class DryRunEvaluator:
@@ -121,6 +122,7 @@ class DryRunEvaluator:
         market_id: str,
         exit_mid_price: Optional[float],
         timestamp: Optional[datetime] = None,
+        stop_loss_pct: Optional[float] = None,
     ) -> List[DryRunOutcome]:
         if exit_mid_price is None:
             return []
@@ -132,12 +134,23 @@ class DryRunEvaluator:
             for trade_id, trade in list(self._open.items()):
                 if trade.token_id != token_id:
                     continue
-                if timestamp < trade.resolve_at:
+
+                # Stop-loss: fiyat entry'e göre stop_loss_pct kadar ters giderse erken kapat
+                stop_loss_hit = False
+                if stop_loss_pct and stop_loss_pct > 0 and trade.size_usd > 0:
+                    pnl_check = self._estimate_pnl_usd(
+                        trade.direction, trade.size_usd, trade.entry_mid_price, exit_price
+                    )
+                    if pnl_check / trade.size_usd <= -abs(stop_loss_pct):
+                        stop_loss_hit = True
+
+                if timestamp < trade.resolve_at and not stop_loss_hit:
                     continue
 
                 pnl = self._estimate_pnl_usd(trade.direction, trade.size_usd, trade.entry_mid_price, exit_price)
                 ret = (pnl / trade.size_usd) if trade.size_usd > 0 else 0.0
-                won = pnl >= 0
+                # Gerçek kazanç: en az %1 getiri olmalı (pnl >= 0 çok küçük hareketleri de win sayıyordu)
+                won = ret >= 0.01
 
                 outcome = DryRunOutcome(
                     trade_id=trade_id,
@@ -152,6 +165,7 @@ class DryRunEvaluator:
                     won=won,
                     opened_at=trade.opened_at,
                     closed_at=timestamp,
+                    stop_loss_hit=stop_loss_hit,
                 )
                 outcomes.append(outcome)
 

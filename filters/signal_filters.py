@@ -26,8 +26,7 @@ class SignalResult:
     # Performans takibi için ek alanlar
     entry_price: float = 0.0
     side: str = ""
-    # +1: fiyat EMA üzerinde (YES overbought), -1: EMA altında (YES oversold), 0: belirsiz
-    price_direction: int = 0
+    direction_type: str = ""  # "MOMENTUM" veya "MEAN-REV"
 
     WEIGHTS: dict = field(default_factory=lambda: {
         # Aşırı uç orderbook dengesizliklerine daha az, fiyat hareketine biraz daha fazla ağırlık ver
@@ -166,8 +165,6 @@ class SignalFilter:
         zscore = abs(prices[-1] - ema) / std
         result.mid_zscore = zscore
         result.zscore_score = min(zscore / settings.zscore_threshold, 1.0)
-        # Fiyatın EMA'ya göre yönünü kaydet (+1 üstte = YES overbought, -1 altta = YES oversold)
-        result.price_direction = 1 if prices[-1] > ema else -1
 
     def _filter_overreaction(self, snap, result):
         prices = np.array(self._mid_history)

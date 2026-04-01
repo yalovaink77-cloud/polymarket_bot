@@ -251,18 +251,51 @@ class PolymarketBot:
             market_id=snap.market_id,
             exit_mid_price=snap.mid_price,
             timestamp=snap.timestamp,
+            stop_loss_pct=settings.dry_run_stop_loss_pct,
         )
         if not outcomes:
             return
 
+        history_path = Path("logs/trade_history.jsonl")
+        history_path.parent.mkdir(exist_ok=True)
+
         for outcome in outcomes:
             status = "WIN" if outcome.won else "LOSS"
+            sl_tag = " [STOP-LOSS]" if outcome.stop_loss_hit else ""
             logger.info(
-                f"Dry-run closed | {status} | market={outcome.market_id} trade_id={outcome.trade_id} "
+                f"Dry-run closed | {status}{sl_tag} | market={outcome.market_id} trade_id={outcome.trade_id} "
                 f"entry={outcome.entry_mid_price:.4f} exit={outcome.exit_mid_price:.4f} "
                 f"pnl=${outcome.pnl_usd:.2f} ret={100*outcome.return_pct:.2f}%"
             )
             self.risk_manager.remove_position(outcome.trade_id)
+
+            # Trade geçmişine yaz — sinyal parametreleriyle birlikte
+            meta = self._decisions.get(outcome.trade_id, {})
+            record = {
+                "trade_id": outcome.trade_id,
+                "market_id": outcome.market_id,
+                "token_id": outcome.token_id,
+                "direction": outcome.direction,
+                "direction_type": meta.get("direction_type", ""),
+                "imbalance_ratio": meta.get("imbalance_ratio", 0.0),
+                "overreaction_score": meta.get("overreaction_score", 0.0),
+                "mid_zscore": meta.get("mid_zscore", 0.0),
+                "composite_score": meta.get("composite_score", 0.0),
+                "size_usd": outcome.size_usd,
+                "entry_mid_price": outcome.entry_mid_price,
+                "exit_mid_price": outcome.exit_mid_price,
+                "pnl_usd": round(outcome.pnl_usd, 4),
+                "return_pct": round(outcome.return_pct, 6),
+                "won": outcome.won,
+                "stop_loss_hit": outcome.stop_loss_hit,
+                "opened_at": outcome.opened_at.isoformat(),
+                "closed_at": outcome.closed_at.isoformat(),
+            }
+            try:
+                with history_path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record) + "\n")
+            except Exception as exc:
+                logger.warning(f"trade_history yazma hatası: {exc}")
 
         summary = self.dry_run_evaluator.summary()
         closed = summary["closed_trades"]
@@ -355,6 +388,12 @@ class PolymarketBot:
                 "entry_price": entry_price,
                 "size_usd": risk.max_size_usd,
                 "settled": False,
+                # Sinyal metadata — analiz için
+                "direction_type": getattr(signal, "direction_type", ""),
+                "imbalance_ratio": float(getattr(signal, "imbalance_ratio", 0.0)),
+                "overreaction_score": float(getattr(signal, "overreaction_score", 0.0)),
+                "mid_zscore": float(getattr(signal, "mid_zscore", 0.0)),
+                "composite_score": float(getattr(signal, "composite_score", 0.0)),
             }
 
         mode = "LIVE" if live_mode else "DRY RUN"
@@ -378,10 +417,20 @@ class PolymarketBot:
                 f"win_rate={win_rate:.2f}% net_pnl=${net_pnl:.2f}"
             )
 
+        market_question = ""
+        meta = self.market_meta.get(signal.token_id)
+        if not meta:
+            meta = next((m for m in self.market_meta.values() if m.get('market_id') == signal.market_id), None)
+        if meta:
+            q = meta.get('market_question', '')
+            if q:
+                market_question = f"\nSoru: _{q}_"
+
         self._send_async_message(
             f"🤖 *Auto Trade {status}* ({mode})\n"
-            f"Market: `{signal.market_id}`\n"
-            f"Direction: *{direction}*\n"
+            f"Market: `{signal.market_id}`"
+            + market_question
+            + f"\nDirection: *{direction}*\n"
             f"Size: `${risk.max_size_usd:.2f}`\n"
             f"Order ID: `{order_id or 'N/A'}`"
             + pnl_line
@@ -421,6 +470,7 @@ class PolymarketBot:
         # Overreaction yüksekse (bilgi-odaklı hareket) momentumu takip et.
         # Düşükse (likidite-kaynaklı imbalance) mean-revert et.
         is_momentum = result.overreaction_score >= settings.momentum_overreaction_min
+        result.direction_type = "MOMENTUM" if is_momentum else "MEAN-REV"
         if is_momentum:
             # Fiyat EMA üzerindeyse hareket yukarı → YES momentum; altındaysa NO momentum
             result.side = "YES" if result.price_direction >= 0 else "NO"
@@ -429,7 +479,7 @@ class PolymarketBot:
             result.side = "NO" if result.imbalance_ratio > 1.0 else "YES"
 
         logger.debug(
-            f"Direction: {'MOMENTUM' if is_momentum else 'MEAN-REV'} → {result.side} | "
+            f"Direction: {result.direction_type} → {result.side} | "
             f"overreact={result.overreaction_score:.2f} imbalance={result.imbalance_ratio:.2f} "
             f"price_dir={result.price_direction}"
         )
@@ -606,7 +656,7 @@ class PolymarketBot:
                     async with aiohttp.ClientSession(timeout=timeout) as session:
                         for market_id in market_ids:
                             url = "https://gamma-api.polymarket.com/markets"
-                            params = {"id": market_id}
+                            params = {"condition_id": market_id}
                             try:
                                 async with session.get(url, params=params) as resp:
                                     if resp.status != 200:
