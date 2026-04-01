@@ -331,7 +331,7 @@ class PolymarketBot:
             if order_id:
                 self._track_dry_run_trade(order_id, signal, risk)
 
-        direction = "BUY YES" if signal.imbalance_ratio > 1.0 else "BUY NO"
+        direction = "BUY YES" if signal.side == "YES" else "BUY NO"
         side = (getattr(signal, "side", "") or "").upper() or ("YES" if signal.imbalance_ratio > 1.0 else "NO")
         entry_price = float(getattr(signal, "entry_price", 0.0) or 0.0)
         if entry_price <= 0:
@@ -395,19 +395,44 @@ class PolymarketBot:
             return
         if not self._weather_allows_trade(snap.token_id):
             return
+
+        # Near-resolution filtresi: market kapanmak üzereyken imbalance sinyal değil gürültüdür
+        mid = snap.mid_price
+        if mid is not None and not (settings.near_resolution_min < mid < settings.near_resolution_max):
+            logger.debug(
+                f"Near-resolution skip: market={snap.market_id[:10]} mid={mid:.3f} "
+                f"(filter=[{settings.near_resolution_min}, {settings.near_resolution_max}])"
+            )
+            return
+
         result = filt.evaluate(snap)
         if result is None or not result.should_alert:
             return
 
         # Per-market cooldown: aynı market için çok sık sinyal açılmasını önle
-        _SIGNAL_COOLDOWN_SEC = 60
         last_signal = self._last_signal_time.get(snap.market_id, 0.0)
-        if time.time() - last_signal < _SIGNAL_COOLDOWN_SEC:
+        if time.time() - last_signal < settings.signal_cooldown_sec:
             return
 
         # Performans takibi için giriş fiyatı ve yön bilgisini doldur
         result.entry_price = snap.mid_price or 0.0
-        result.side = "YES" if result.imbalance_ratio > 1.0 else "NO"
+
+        # Yön belirleme: momentum vs mean-reversion
+        # Overreaction yüksekse (bilgi-odaklı hareket) momentumu takip et.
+        # Düşükse (likidite-kaynaklı imbalance) mean-revert et.
+        is_momentum = result.overreaction_score >= settings.momentum_overreaction_min
+        if is_momentum:
+            # Fiyat EMA üzerindeyse hareket yukarı → YES momentum; altındaysa NO momentum
+            result.side = "YES" if result.price_direction >= 0 else "NO"
+        else:
+            # Mean-reversion: yüksek bid baskısı = YES overbought → BUY NO; tersi BUY YES
+            result.side = "NO" if result.imbalance_ratio > 1.0 else "YES"
+
+        logger.debug(
+            f"Direction: {'MOMENTUM' if is_momentum else 'MEAN-REV'} → {result.side} | "
+            f"overreact={result.overreaction_score:.2f} imbalance={result.imbalance_ratio:.2f} "
+            f"price_dir={result.price_direction}"
+        )
         risk = self.risk_manager.check(snap.market_id)
         if not risk.approved:
             logger.warning(f"Signal detected but risk check failed: {risk.reason}")
