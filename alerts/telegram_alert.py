@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 from loguru import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -37,8 +38,10 @@ class TelegramAlert:
         self._pending[alert_id] = future
 
         direction = "BUY YES" if signal.imbalance_ratio > 1.0 else "BUY NO"
+        now = datetime.now(timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M:%S")
         text = (
-            f"🚨 *Signal Alert*\n\n"
+            f"🚨 *Signal Alert*\n"
+            f"🕐 `{now}` (UTC+3)\n\n"
             f"Market: `{signal.market_id}`\n"
             f"Direction: *{direction}*\n\n"
             f"📊 *Scores*\n"

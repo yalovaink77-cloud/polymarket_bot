@@ -4,6 +4,7 @@ import signal as sys_signal
 import sys
 import time
 import uuid
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict
 
@@ -428,6 +429,7 @@ class PolymarketBot:
 
         self._send_async_message(
             f"🤖 *Auto Trade {status}* ({mode})\n"
+            f"🕐 `{datetime.now(timezone(timedelta(hours=3))).strftime('%d.%m.%Y %H:%M:%S')}` (UTC+3)\n"
             f"Market: `{signal.market_id}`"
             + market_question
             + f"\nDirection: *{direction}*\n"

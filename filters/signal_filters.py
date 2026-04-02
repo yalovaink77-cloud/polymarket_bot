@@ -27,6 +27,7 @@ class SignalResult:
     entry_price: float = 0.0
     side: str = ""
     direction_type: str = ""  # "MOMENTUM" veya "MEAN-REV"
+    price_direction: float = 0.0  # pozitif = fiyat EMA üzerinde, negatif = altında
 
     WEIGHTS: dict = field(default_factory=lambda: {
         # Aşırı uç orderbook dengesizliklerine daha az, fiyat hareketine biraz daha fazla ağırlık ver
@@ -162,9 +163,11 @@ class SignalFilter:
         std = prices.std()
         if std == 0:
             return
-        zscore = abs(prices[-1] - ema) / std
+        delta = prices[-1] - ema
+        zscore = abs(delta) / std
         result.mid_zscore = zscore
         result.zscore_score = min(zscore / settings.zscore_threshold, 1.0)
+        result.price_direction = delta
 
     def _filter_overreaction(self, snap, result):
         prices = np.array(self._mid_history)
