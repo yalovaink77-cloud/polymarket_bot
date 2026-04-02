@@ -13,15 +13,21 @@ class TelegramAlert:
 
     async def start(self):
         self._app = Application.builder().token(settings.telegram_bot_token).build()
-        self._app.add_handler(CallbackQueryHandler(self._handle_callback))
         await self._app.initialize()
-        await self._app.start()
-        await self._app.updater.start_polling()
-        logger.info("Telegram bot started")
+        # Approval gerekmiyorsa polling başlatma — başka instance çakışmasını önler
+        if settings.require_telegram_approval:
+            self._app.add_handler(CallbackQueryHandler(self._handle_callback))
+            await self._app.start()
+            await self._app.updater.start_polling()
+            logger.info("Telegram bot started (polling active)")
+        else:
+            await self._app.start()
+            logger.info("Telegram bot started (send-only, no polling)")
 
     async def stop(self):
         if self._app:
-            await self._app.updater.stop()
+            if settings.require_telegram_approval:
+                await self._app.updater.stop()
             await self._app.stop()
             await self._app.shutdown()
 
@@ -83,8 +89,18 @@ class TelegramAlert:
 
     async def send_message(self, text: str):
         if self._app:
-            await self._app.bot.send_message(
-                chat_id=settings.telegram_chat_id,
-                text=text,
-                parse_mode="Markdown",
-            )
+            try:
+                await self._app.bot.send_message(
+                    chat_id=settings.telegram_chat_id,
+                    text=text,
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                # Markdown parse hatası olabilir, düz metin olarak tekrar dene
+                try:
+                    await self._app.bot.send_message(
+                        chat_id=settings.telegram_chat_id,
+                        text=text,
+                    )
+                except Exception as e:
+                    logger.error(f"Telegram send_message failed: {e}")

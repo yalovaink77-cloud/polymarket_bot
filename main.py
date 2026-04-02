@@ -459,9 +459,12 @@ class PolymarketBot:
             return
 
         # Per-market cooldown: aynı market için çok sık sinyal açılmasını önle
+        now = time.time()
         last_signal = self._last_signal_time.get(snap.market_id, 0.0)
-        if time.time() - last_signal < settings.signal_cooldown_sec:
+        if now - last_signal < settings.signal_cooldown_sec:
             return
+        # Race condition'ı önlemek için cooldown'ı hemen işaretle
+        self._last_signal_time[snap.market_id] = now
 
         # Performans takibi için giriş fiyatı ve yön bilgisini doldur
         result.entry_price = snap.mid_price or 0.0
@@ -491,7 +494,6 @@ class PolymarketBot:
             return
 
         if settings.auto_execute:
-            self._last_signal_time[snap.market_id] = time.time()
             self._execute_signal(result, risk)
             return
 
@@ -504,7 +506,6 @@ class PolymarketBot:
                     self._loop,
                 )
         else:
-            self._last_signal_time[snap.market_id] = time.time()
             self._execute_signal(result, risk)
 
     def _on_approved(self, alert_id: str):
