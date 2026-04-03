@@ -24,6 +24,7 @@ from alerts import TelegramAlert
 from executor import TradeExecutor
 from weather import WeatherClient, WeatherSnapshot
 from performance import PerformanceTracker, DryRunEvaluator
+from update_weather_markets import WeatherMarketUpdater
 
 logger.remove()
 logger.add(sys.stdout, level=settings.log_level, format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
@@ -111,6 +112,10 @@ class PolymarketBot:
         self.market_meta: Dict[str, dict] = MARKETS_META
         self.weather_client: WeatherClient | None = WeatherClient(settings.weather_api_key) if settings.weather_api_key else None
         self._weather_state: Dict[str, WeatherSnapshot] = {}
+        self.market_updater = WeatherMarketUpdater(
+            config_path="markets_config.json",
+            on_updated=self._on_markets_updated,
+        )
         self.signal_filters: Dict[str, SignalFilter] = {
             token_id: SignalFilter(token_id, market_id)
             for token_id, market_id in MARKETS_TO_TRACK.items()
@@ -253,6 +258,7 @@ class PolymarketBot:
             exit_mid_price=snap.mid_price,
             timestamp=snap.timestamp,
             stop_loss_pct=settings.dry_run_stop_loss_pct,
+            take_profit_pct=settings.dry_run_take_profit_pct,
         )
         if not outcomes:
             return
@@ -263,8 +269,9 @@ class PolymarketBot:
         for outcome in outcomes:
             status = "WIN" if outcome.won else "LOSS"
             sl_tag = " [STOP-LOSS]" if outcome.stop_loss_hit else ""
+            tp_tag = " [TAKE-PROFIT]" if outcome.take_profit_hit else ""
             logger.info(
-                f"Dry-run closed | {status}{sl_tag} | market={outcome.market_id} trade_id={outcome.trade_id} "
+                f"Dry-run closed | {status}{sl_tag}{tp_tag} | market={outcome.market_id} trade_id={outcome.trade_id} "
                 f"entry={outcome.entry_mid_price:.4f} exit={outcome.exit_mid_price:.4f} "
                 f"pnl=${outcome.pnl_usd:.2f} ret={100*outcome.return_pct:.2f}%"
             )
@@ -558,6 +565,7 @@ class PolymarketBot:
         self.tracker.start()
 
         tasks = []
+        tasks.append(asyncio.create_task(self.market_updater.run_forever(), name="weather-market-updater"))
         if self.weather_client and self.market_meta:
             tasks.append(asyncio.create_task(self._weather_loop(), name="weather-poller"))
         # Periyodik olarak sanal PnL durumunu logla
@@ -588,6 +596,7 @@ class PolymarketBot:
 
         if self.weather_client:
             await self.weather_client.close()
+        await self.market_updater.close()
 
         logger.info("Bot stopped cleanly.")
 
@@ -754,6 +763,28 @@ class PolymarketBot:
                 logger.error(f"Resolution watcher error: {exc}")
 
             await asyncio.sleep(interval)
+
+    async def _on_markets_updated(self, updated: dict) -> None:
+        """
+        WeatherMarketUpdater yeni token_id'leri kaydettiğinde çağrılır.
+        markets_config.json'dan güncel metadata'yı yeniden yükler; OrderBookTracker
+        için yeni token'ları kayıt dışı bırakma işlemi bir bot yeniden başlatması
+        gerektirir (tracker thread-safe hot-reload desteklemiyor).
+        """
+        global MARKETS_TO_TRACK, MARKETS_META
+        MARKETS_TO_TRACK = load_markets_config()
+        MARKETS_META = load_markets_metadata()
+        self.market_meta = MARKETS_META
+        city_list = ", ".join(sorted(updated.keys()))
+        logger.info(f"markets_config.json yeniden yüklendi. Güncellenen şehirler: {city_list}")
+        try:
+            await self.telegram.send_message(
+                f"🌤 *Weather Markets Updated*\n"
+                f"Güncellenen şehirler: `{city_list}`\n"
+                f"_Yeni token'ların aktif takibi için botu yeniden başlatın._"
+            )
+        except Exception as exc:
+            logger.warning(f"Telegram market update bildirimi gönderilemedi: {exc}")
 
     async def _weather_loop(self):
         """

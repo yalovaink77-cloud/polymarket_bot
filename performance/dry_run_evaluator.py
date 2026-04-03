@@ -42,6 +42,7 @@ class DryRunOutcome:
     opened_at: datetime
     closed_at: datetime
     stop_loss_hit: bool = False
+    take_profit_hit: bool = False
 
 
 class DryRunEvaluator:
@@ -123,6 +124,7 @@ class DryRunEvaluator:
         exit_mid_price: Optional[float],
         timestamp: Optional[datetime] = None,
         stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
     ) -> List[DryRunOutcome]:
         if exit_mid_price is None:
             return []
@@ -135,22 +137,35 @@ class DryRunEvaluator:
                 if trade.token_id != token_id:
                     continue
 
-                # Stop-loss: fiyat entry'e göre stop_loss_pct kadar ters giderse erken kapat
+                # Stop-loss / take-profit: horizon beklenmeden erken kapatma
                 stop_loss_hit = False
-                if stop_loss_pct and stop_loss_pct > 0 and trade.size_usd > 0:
+                take_profit_hit = False
+                if trade.size_usd > 0:
                     pnl_check = self._estimate_pnl_usd(
                         trade.direction, trade.size_usd, trade.entry_mid_price, exit_price
                     )
-                    if pnl_check / trade.size_usd <= -abs(stop_loss_pct):
-                        stop_loss_hit = True
+                    ret_check = pnl_check / trade.size_usd
+                    if stop_loss_pct and stop_loss_pct > 0:
+                        if ret_check <= -abs(stop_loss_pct):
+                            stop_loss_hit = True
+                    if take_profit_pct and take_profit_pct > 0:
+                        if ret_check >= abs(take_profit_pct):
+                            take_profit_hit = True
 
-                if timestamp < trade.resolve_at and not stop_loss_hit:
+                early_exit = stop_loss_hit or take_profit_hit
+                if timestamp < trade.resolve_at and not early_exit:
                     continue
 
                 pnl = self._estimate_pnl_usd(trade.direction, trade.size_usd, trade.entry_mid_price, exit_price)
                 ret = (pnl / trade.size_usd) if trade.size_usd > 0 else 0.0
                 # Gerçek kazanç: en az %1 getiri olmalı (pnl >= 0 çok küçük hareketleri de win sayıyordu)
-                won = ret >= 0.01
+                # take_profit_hit garantili win; stop_loss_hit garantili loss
+                if take_profit_hit:
+                    won = True
+                elif stop_loss_hit:
+                    won = False
+                else:
+                    won = ret >= 0.0
 
                 outcome = DryRunOutcome(
                     trade_id=trade_id,
@@ -166,6 +181,7 @@ class DryRunEvaluator:
                     opened_at=trade.opened_at,
                     closed_at=timestamp,
                     stop_loss_hit=stop_loss_hit,
+                    take_profit_hit=take_profit_hit,
                 )
                 outcomes.append(outcome)
 

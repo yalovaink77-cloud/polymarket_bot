@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     dry_run_min_net_pnl_usd: float = Field(0.0, env="DRY_RUN_MIN_NET_PNL_USD")
     dry_run_pnl_floor_price: float = Field(0.05, env="DRY_RUN_PNL_FLOOR_PRICE")
     dry_run_state_file: str = Field("logs/dry_run_stats.json", env="DRY_RUN_STATE_FILE")
-    dry_run_stop_loss_pct: float = Field(0.30, env="DRY_RUN_STOP_LOSS_PCT")
+    dry_run_stop_loss_pct: float = Field(0.10, env="DRY_RUN_STOP_LOSS_PCT")
+    dry_run_take_profit_pct: float = Field(0.08, env="DRY_RUN_TAKE_PROFIT_PCT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
     class Config:
