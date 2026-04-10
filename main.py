@@ -478,17 +478,11 @@ class PolymarketBot:
         # Performans takibi için giriş fiyatı ve yön bilgisini doldur
         result.entry_price = snap.mid_price or 0.0
 
-        # Yön belirleme: momentum vs mean-reversion
-        # Overreaction yüksekse (bilgi-odaklı hareket) momentumu takip et.
-        # Düşükse (likidite-kaynaklı imbalance) mean-revert et.
-        is_momentum = result.overreaction_score >= settings.momentum_overreaction_min
-        result.direction_type = "MOMENTUM" if is_momentum else "MEAN-REV"
-        if is_momentum:
-            # Fiyat EMA üzerindeyse hareket yukarı → YES momentum; altındaysa NO momentum
-            result.side = "YES" if result.price_direction >= 0 else "NO"
-        else:
-            # Mean-reversion: yüksek bid baskısı = YES overbought → BUY NO; tersi BUY YES
-            result.side = "NO" if result.imbalance_ratio > 1.0 else "YES"
+        # Yön belirleme: sadece MEAN-REV stratejisi aktif.
+        # Analizde MOMENTUM %23 win rate ile yapısal kayıp üretiyor — devre dışı bırakıldı.
+        result.direction_type = "MEAN-REV"
+        # Mean-reversion: yüksek bid baskısı = YES overbought → BUY NO; tersi BUY YES
+        result.side = "NO" if result.imbalance_ratio > 1.0 else "YES"
 
         logger.debug(
             f"Direction: {result.direction_type} → {result.side} | "

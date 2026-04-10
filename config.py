@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     imbalance_high: float = Field(1.8, env="IMBALANCE_HIGH")
     imbalance_low: float = Field(0.55, env="IMBALANCE_LOW")
     depth_ratio_min: float = Field(0.4, env="DEPTH_RATIO_MIN")
-    zscore_threshold: float = Field(2.7, env="ZSCORE_THRESHOLD")
+    zscore_threshold: float = Field(2.0, env="ZSCORE_THRESHOLD")  # 2.7→2.0: yüksek zscore MEAN-REV'de %46 win rate gösterdi
     overreaction_threshold: float = Field(3.0, env="OVERREACTION_THRESHOLD")
     spread_zscore_threshold: float = Field(2.5, env="SPREAD_ZSCORE_THRESHOLD")
     top3_concentration_min: float = Field(0.70, env="TOP3_CONCENTRATION_MIN")
@@ -43,13 +43,13 @@ class Settings(BaseSettings):
     env: str = Field("development", env="ENV")
     require_telegram_approval: bool = Field(False, env="REQUIRE_TELEGRAM_APPROVAL")
     auto_switch_to_live: bool = Field(False, env="AUTO_SWITCH_TO_LIVE")
-    dry_run_eval_horizon_sec: int = Field(300, env="DRY_RUN_EVAL_HORIZON_SEC")
+    dry_run_eval_horizon_sec: int = Field(1800, env="DRY_RUN_EVAL_HORIZON_SEC")  # 5dk→30dk: kısa horizon %45 sıfır PnL üretiyordu
     dry_run_min_trades: int = Field(20, env="DRY_RUN_MIN_TRADES")
     dry_run_min_win_rate: float = Field(0.55, env="DRY_RUN_MIN_WIN_RATE")
     dry_run_min_net_pnl_usd: float = Field(0.0, env="DRY_RUN_MIN_NET_PNL_USD")
     dry_run_pnl_floor_price: float = Field(0.05, env="DRY_RUN_PNL_FLOOR_PRICE")
     dry_run_state_file: str = Field("logs/dry_run_stats.json", env="DRY_RUN_STATE_FILE")
-    dry_run_stop_loss_pct: float = Field(0.10, env="DRY_RUN_STOP_LOSS_PCT")
+    dry_run_stop_loss_pct: float = Field(0.05, env="DRY_RUN_STOP_LOSS_PCT")  # %10→%5: 7 SL işlemi $56 kaybettirdi
     dry_run_take_profit_pct: float = Field(0.08, env="DRY_RUN_TAKE_PROFIT_PCT")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
