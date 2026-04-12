@@ -489,11 +489,11 @@ class PolymarketBot:
             f"overreact={result.overreaction_score:.2f} imbalance={result.imbalance_ratio:.2f} "
             f"price_dir={result.price_direction}"
         )
-            risk = self.risk_manager.check(
-                snap.market_id,
-                composite_score=float(getattr(result, "composite_score", 0.0)),
-                entry_price=float(getattr(result, "entry_price", 0.5) or 0.5),
-            )
+        risk = self.risk_manager.check(
+            snap.market_id,
+            composite_score=float(getattr(result, "composite_score", 0.0)),
+            entry_price=float(getattr(result, "entry_price", 0.5) or 0.5),
+        )
         if not risk.approved:
             logger.warning(f"Signal detected but risk check failed: {risk.reason}")
             if "No available capital" in risk.reason:
