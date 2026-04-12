@@ -53,12 +53,15 @@ class PerformanceTracker:
             current = get_price(trade.token_id)
             if current is None or trade.entry_price <= 0:
                 continue
-            # Basit approx: size_usd, entry_price üzerinden share sayısını türet.
-            shares = trade.size_usd / trade.entry_price
             if trade.side.upper() == "YES":
+                # YES payı entry_yes üzerinden dolar→share
+                shares = trade.size_usd / trade.entry_price
                 delta = current - trade.entry_price
             else:
-                # NO tarafı için payoff 1 - price kabul edilir.
+                # NO tarafı için dolar→share dönüşümü entry_no = (1-entry_yes) üzerinden yapılmalı.
+                entry_no = max(1.0 - trade.entry_price, 0.001)
+                shares = trade.size_usd / entry_no
+                # NO payoff = (1 - price). PnL delta = exit_no - entry_no = (1-current) - (1-entry_yes)
                 delta = (1 - current) - (1 - trade.entry_price)
             pnl = shares * delta
             total_pnl += pnl
