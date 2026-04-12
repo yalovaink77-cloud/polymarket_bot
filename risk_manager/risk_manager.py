@@ -40,6 +40,14 @@ class RiskCheck:
     max_size_usd: float = 0.0
 
 class RiskManager:
+        def status_summary(self):
+            capital = settings.capital_total_usd
+            deployed = self.total_deployed_usd
+            return (
+                f"Capital: ${capital:.0f} | "
+                f"Deployed: ${deployed:.2f} ({100*deployed/capital:.1f}%) | "
+                f"Positions: {len(self._positions)}"
+            )
     def __init__(self):
         self._positions: Dict[str, dict] = {}
 
