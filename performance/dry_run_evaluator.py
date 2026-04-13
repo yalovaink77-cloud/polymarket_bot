@@ -165,7 +165,7 @@ class DryRunEvaluator:
                 elif stop_loss_hit:
                     won = False
                 else:
-                    won = ret >= 0.0
+                    won = ret >= 0.01
 
                 outcome = DryRunOutcome(
                     trade_id=trade_id,
